@@ -78,22 +78,31 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'internal error' });
 });
 
-const server = app.listen(PORT, () => {
-  log('info', 'server started', { port: PORT, env: APP_ENV });
-});
-
-const shutdown = async (signal) => {
-  log('info', 'shutting down', { signal });
-  server.close(async () => {
-    await pool.end();   // DB connection খুলে রাখলে graceful stop হবে না
-    process.exit(0);
+// শুধু সরাসরি চালালে (node server.js) এই অংশ চলবে — require() করলে নয়
+const start = async () => {
+  await initDb();
+  const server = app.listen(PORT, () => {
+    log('info', 'server started', { port: PORT, env: APP_ENV });
   });
+
+  const shutdown = async (signal) => {
+    log('info', 'shutting down', { signal });
+    server.close(async () => {
+      await pool.end();
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 };
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+if (require.main === module) {
+  start().catch((err) => {
+    log('error', 'startup failed', { error: err.message });
+    process.exit(1);
+  });
+}
 
-initDb().catch((err) => {
-  log('error', 'database init failed', { error: err.message });
-  process.exit(1);
-});
+// test ও অন্য module-এর জন্য export
+module.exports = { app, pool, initDb, log };
