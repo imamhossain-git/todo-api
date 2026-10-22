@@ -12,6 +12,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    ports:
+      - "127.0.0.1:5432:5432"   # only on localhost, for local dev/test (CI uses service container)
     restart: unless-stopped
 
   app:
