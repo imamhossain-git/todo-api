@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: todo
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: todoapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U todo -d todoapp"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://todo:${{ secrets.CI_POSTGRES_PASSWORD }}@localhost:5432/todoapp
+        run: npm test
+
+  stack:
+    name: Full stack smoke test
+    runs-on: ubuntu-latest
+    needs: unit
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env for compose
+        run: |
+          cat > .env <<EOF
+          POSTGRES_USER=todo
+          POSTGRES_PASSWORD=${{ secrets.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB=todoapp
+          APP_ENV=ci
+          EOF
+
+      - name: Build and start stack
+        run: docker compose up -d --build
+
+      - name: Wait for readiness
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/ready >/dev/null 2>&1; then
+              echo "app is ready after ${i} attempts"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "app did not become ready"
+          docker compose logs
+          exit 1
+
+      - name: Smoke test API
+        run: |
+          curl -fsS -X POST http://localhost:3000/todos -H 'Content-Type: application/json' -d '{"title":"ci smoke"}' | tee /tmp/smoke.txt
+          grep -q 'ci smoke' /tmp/smoke.txt
+          curl -fsS http://localhost:3000/todos | grep -q 'ci smoke'
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
